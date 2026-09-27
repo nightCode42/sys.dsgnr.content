@@ -1,0 +1,835 @@
+{
+  "questions": [
+    {
+      "id": "db-isolation-001",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "isolation",
+      "difficulty": 1,
+      "sequence": 1,
+      "prompt": "A reporting transaction runs `SELECT count(*) FROM orders WHERE status = 'new'` twice. The first run returns 12, the second returns 14, because another transaction committed two matching inserts in between. Which anomaly is this?",
+      "options": [
+        "A dirty read",
+        "A non-repeatable read",
+        "A phantom read",
+        "A lost update"
+      ],
+      "answer": 2,
+      "explanation": "The distinction that matters is what changed. A phantom read occurs when the *set of rows matching a predicate* changes between two reads in the same transaction. A non-repeatable read occurs when a *value inside a row you already read* changes. Here no row the transaction saw was modified; new rows appeared that satisfy `status = 'new'`. That is a phantom.\n\n\"A non-repeatable read\" is the most-chosen wrong answer, and the misconception behind it is real: people treat any changed query result as the same anomaly, collapsing row-level and predicate-level effects into one idea. The reason the distinction exists is that they need different defences — row versioning is enough to stop a non-repeatable read, but stopping a phantom requires reasoning about rows that do not exist yet. \"A dirty read\" encodes the belief that seeing any concurrency effect mid-transaction means you saw uncommitted data; the inserts here were committed, which is precisely why they became visible. \"A lost update\" is the reflex of treating every anomaly name as interchangeable: a lost update requires two transactions writing the same row, and this transaction writes nothing at all.\n\nWhat the defence costs: preventing phantoms means the engine must lock or track ranges that hold no rows, or give the transaction a frozen snapshot for its whole lifetime. Range locking suppresses concurrent inserts into the range, which is a direct throughput cost; a long-lived snapshot holds back reclamation of old row versions, which is a storage and maintenance cost. This is why engines default to a level that permits phantoms and make you opt in.\n\nOne assumption worth naming: this anomaly is possible at the default isolation level of many engines, but not all defaults behave the same way. PostgreSQL's Repeatable Read forbids phantom reads entirely — stronger than the SQL standard requires at that level — because the standard specifies which anomalies must *not* occur, and exceeding it is conformant.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Transaction Isolation",
+        "url": "https://www.postgresql.org/docs/current/transaction-iso.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-storage-engines-001",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "storage-engines",
+      "difficulty": 1,
+      "sequence": 1,
+      "prompt": "In a log-structured merge engine, one key's data is written to disk several times over its lifetime as background compaction merges sorted files into larger ones. Which cost does this repeated rewriting measure?",
+      "options": [
+        "Write amplification",
+        "Read amplification",
+        "Space amplification",
+        "Write stalling"
+      ],
+      "answer": 0,
+      "explanation": "Write amplification is the ratio of bytes the storage device actually writes to bytes the application asked to write. Compaction is the source of it in an LSM engine: a record written once by the application is rewritten each time it is merged into a higher level, so a key can be written to disk five or ten times before it settles.\n\n\"Read amplification\" is the sibling metric and the most common confusion — it counts how many disk reads one logical read costs, which in an LSM engine is high for a different reason: a lookup may have to check the in-memory table plus several levels of sorted files. \"Space amplification\" is the third member of the same family and the closest near-miss here, because compaction does affect it; but space amplification measures bytes on disk against live logical bytes, which grows from obsolete versions *waiting* for compaction rather than from the rewriting itself. \"Write stalling\" names the symptom rather than the cost: when compaction cannot keep pace with ingest, the engine throttles or blocks incoming writes. You can have high write amplification with no stalls at all, so the two are not the same measurement.\n\nThese three amplifications trade against each other, and no engine minimises all of them at once — that is the useful principle to carry away. An LSM engine buys a cheap, sequential write path and good compression of sorted blocks, and pays in read amplification and compaction I/O that competes with foreground traffic. A B-tree pays its own amplification differently: updating one row dirties and eventually writes a whole page, so a small random update can cost a multiple of its size, but there is no compaction backlog and no stall behaviour to tune.\n\nThe practical consequence: if your workload is read-dominated and fits in memory, LSM's write-path advantage buys you almost nothing while its compaction still competes for I/O and disturbs your latency tail.",
+      "resource": {
+        "title": "RocksDB Wiki: Compaction",
+        "url": "https://github.com/facebook/rocksdb/wiki/Compaction",
+        "kind": "documentation"
+      }
+    },
+    {
+      "id": "db-indexing-001",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "indexing",
+      "difficulty": 1,
+      "sequence": 1,
+      "prompt": "A query selects only the columns `user_id` and `status`. An index on `(user_id, status)` lets the database answer it entirely from the index, without reading the table's row storage. What is this access called?",
+      "options": [
+        "A clustered index scan",
+        "An index-only scan",
+        "A partial index scan",
+        "A bitmap index scan"
+      ],
+      "answer": 1,
+      "explanation": "The property being tested is *coverage*: whether every column the query needs is present in the index itself. When it is, the engine can answer from the index alone and skip the second lookup into row storage, which is where most of the I/O in an indexed query usually goes. An index with this property is commonly called a covering index, and the access it enables is an index-only scan.\n\nEach wrong option names a real mechanism that people reach for by word association. \"A clustered index scan\" describes where the *rows themselves* physically live — InnoDB stores table rows in primary-key order, so its primary key is clustered — which is a statement about storage layout, not about which columns an index happens to contain. \"A partial index scan\" is the trap the word *partial* sets: a partial index covers a subset of **rows**, defined by a predicate, not a subset of columns. Confusing the two is common enough that it is worth naming explicitly. \"A bitmap index scan\" is a planner strategy for collecting many row locations, combining them across indexes, and sorting them before fetching — which by definition still visits row storage, so it is the opposite of what is described.\n\nWhat coverage costs: every column you add to an index is another column to maintain on every update of that row, and a wider index stores fewer entries per page, so a scan reads more pages to cover the same number of rows. Adding a column purely to make one query index-only is often a bad trade — you slow every write to that table to speed one read path.\n\nOne engine-specific caveat that matters in practice: in PostgreSQL the index carries no visibility information, so an index-only scan checks the visibility map for each candidate row's page. If the page is not marked all-visible the engine must visit the row after all, and the scan gains no advantage over an ordinary index scan. A perfectly covering index on a heavily updated table can therefore deliver none of the benefit until the table is vacuumed.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Index-Only Scans and Covering Indexes",
+        "url": "https://www.postgresql.org/docs/current/indexes-index-only-scans.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-transactions-001",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "transactions",
+      "difficulty": 1,
+      "sequence": 1,
+      "prompt": "A transaction inserts three rows, and the database process is killed before the transaction commits. After restart, none of the three rows exist. Which property does this outcome demonstrate?",
+      "options": [
+        "Consistency",
+        "Durability",
+        "Isolation",
+        "Atomicity"
+      ],
+      "answer": 3,
+      "explanation": "Atomicity is the guarantee that a transaction's effects are all-or-nothing: partial work never becomes visible, including across a crash. Three rows were written and none survived, because the transaction never committed, so the recovery process discarded them. That is atomicity doing its job.\n\n\"Durability\" is the answer most people give, and the misconception is precise enough to be worth naming: durability says that once a commit is *acknowledged*, its effects survive a crash. It says nothing whatsoever about uncommitted work. Because the scenario involves a crash and a correct-looking outcome, it reads as durability — but the transaction here was never acknowledged, so durability was never engaged. \"Consistency\" is the letter of ACID that carries the least independent meaning and attracts the most misuse; in its technical sense it means a transaction moves the database from one state satisfying its declared constraints to another, which is a statement about constraint enforcement, not crash behaviour. \"Isolation\" concerns what *concurrent* transactions can observe about each other, and there is no second transaction in this scenario at all.\n\nThe mechanism behind both atomicity and durability is the same write-ahead log, which is why they get conflated. Before a change touches the data pages, a record of it goes to the log; on restart, the engine replays committed transactions forward and rolls uncommitted ones back. Durability is the replay direction, atomicity is the rollback direction.\n\nWhat atomicity costs: the logging and undo bookkeeping is paid by every transaction, whether it commits or not. A long transaction that aborts makes the engine do work it then discards, and in a multi-version engine it also holds back cleanup of old row versions for its whole lifetime — so an abandoned transaction is not free just because it changed nothing.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Write-Ahead Logging (WAL)",
+        "url": "https://www.postgresql.org/docs/current/wal-intro.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-indexing-002",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "indexing",
+      "difficulty": 2,
+      "sequence": 2,
+      "prompt": "A table has one index, on `(tenant_id, created_at)`. Which query can use it both to locate rows and to return them already ordered, with no separate sort step?",
+      "options": [
+        "`WHERE created_at > '2026-01-01' ORDER BY tenant_id`",
+        "`WHERE tenant_id > 42 ORDER BY created_at`",
+        "`WHERE tenant_id = 42 ORDER BY created_at`",
+        "`WHERE tenant_id = 42 ORDER BY total DESC`"
+      ],
+      "answer": 2,
+      "explanation": "A composite index is sorted lexicographically by its column list, and that single fact answers the question. `created_at` is ordered only *within* one value of `tenant_id`. Pin `tenant_id` to a single value with an equality predicate and you land on one contiguous run of the index in which `created_at` is already in order, so the engine can walk it and stop early.\n\nThe first option, filtering on `created_at` and ordering by `tenant_id`, encodes the belief that a composite index behaves like a bag of independent single-column indexes usable in any role. It does not: without a constraint on the leading column, there is no way to seek, and the index offers no advantage over scanning. The second option is the subtle one and the reason this question exists: a *range* on the leading column spans many `tenant_id` values, and while `created_at` is ordered inside each of them, it is not ordered across them, so a global ordering still requires a sort. The misconception is that any predicate on the leading column preserves the second column's ordering, when only equality does. The fourth option encodes the belief that once an index satisfies the filter, the sort comes free regardless of which column is sorted — `total` is not in the index, so the ordering must be computed.\n\nOne honest qualification, because it is the difference between a rule and a superstition: this describes a single index scan. Some planners can recover ordering for a range or an `IN` list by scanning each matching value separately and merging the results — PostgreSQL can produce a merge over per-value scans in some plans. So \"a range on the leading column forces a sort\" is the general case and the right default assumption, not an absolute law.\n\nWhat this index costs: it serves \"newest rows for one tenant\" extremely well and cannot serve \"newest rows across all tenants\" at all. If you need both, you need a second index or a different physical layout, and you pay for that on every write.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Multicolumn Indexes",
+        "url": "https://www.postgresql.org/docs/current/indexes-multicolumn.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-replication-001",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "replication",
+      "difficulty": 2,
+      "sequence": 1,
+      "prompt": "Users post a comment and are redirected to a page served from an asynchronous read replica. Replication lag is normally 50 ms but reaches 4 s under load, and users report that their own comment is missing. Which change most directly guarantees a user sees their own writes?",
+      "options": [
+        "Add more read replicas so load per replica falls and lag shrinks",
+        "Make the replica synchronous, so commits wait for it to apply the write",
+        "Retry the read after a short delay until the comment becomes visible",
+        "Route a user's reads to the primary briefly after that user writes"
+      ],
+      "answer": 3,
+      "explanation": "Read-your-writes is a *session* guarantee, not a global one, and that is the whole insight. It only has to hold for the one user who just wrote, so it can be bought per session rather than by strengthening the entire system. Sending that user's reads to the primary — or to a replica proven to have applied past the write's log position — restores the guarantee at the cost of a little primary read load, and only for users who wrote recently.\n\n\"Add more read replicas\" mistakes lag for a throughput problem. Replicas reduce per-replica *query* load, but lag is driven by the primary's write rate against the replica's apply rate, and apply is often far less parallel than the writes that produced it. Adding replicas frequently does not reduce lag at all, and never bounds it. \"Retry the read after a short delay\" treats an unbounded staleness window as something a client loop can paper over; it converts a correctness problem into an unbounded latency problem, and in the 4-second tail the user simply waits 4 seconds.\n\nMaking the replica synchronous is the genuinely defensible runner-up, and it deserves credit rather than dismissal: it does fix the symptom, for every session, with no routing logic. What it costs is that *every* writer everywhere now pays replication latency on commit, and the primary's ability to accept writes becomes coupled to the standby's health — a slow disk on the standby becomes a slow write path for the whole application. If your durability requirements already demand synchronous replication, take it and get read-your-writes for free; if they do not, you have made every write slower to fix a read problem affecting one user at a time.\n\nWhat the correct answer costs: primary read capacity, plus a policy for how long the window lasts. Too short and you still miss writes; too long and most traffic lands on the primary, defeating the replicas. The precise version tracks each session's last write position and picks any replica that has passed it, which costs plumbing but bounds the primary load properly.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Replication Configuration Parameters",
+        "url": "https://www.postgresql.org/docs/current/runtime-config-replication.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-nosql-vs-relational-001",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "nosql-vs-relational",
+      "difficulty": 2,
+      "sequence": 1,
+      "prompt": "A booking system must handle 300 bookings/s at peak, will hold about 40 GB after three years, has substantial ad-hoc reporting requirements, and must never allocate the same resource twice. Which primary datastore fits best?",
+      "options": [
+        "A document database, with each booking as a self-contained document",
+        "A single relational database with appropriate indexes",
+        "A wide-column store partitioned by resource identifier",
+        "A relational database sharded by resource identifier from the start"
+      ],
+      "answer": 1,
+      "explanation": "Choose the store from the binding constraint, and here the binding constraint is not volume. 300 writes/s and 40 GB fit comfortably on one well-provisioned relational instance — that is a small database by any modern measure. The hard parts are a correctness invariant that spans rows (no resource allocated twice, under concurrent attempts) and ad-hoc reporting. A single relational database gives you both nearly for free: transactions at an isolation level strong enough to enforce the invariant, and SQL for the reports.\n\nThe document option is attractive because a booking really does look like a self-contained document, and if each booking were independent it would be a fine choice. The misconception is that per-document atomicity is enough: the invariant is *across* bookings competing for the same resource, which is exactly what a document-scoped atomicity model does not cover. You end up reimplementing reservation and conflict detection in application code. The wide-column option encodes the belief that partitioning by the contended key is a scalability win — it is, for raw throughput, but it gives you no cross-row transaction, so the contention you partitioned for becomes application-level compare-and-set, and reporting needs a second system entirely.\n\nSharding the relational database from day one is the most defensible wrong answer, and the misconception is the most respectable: that sharding early is cheap insurance against future growth. It is not cheap. You pay permanently in cross-shard transactions, query complexity and operational surface, to solve a volume problem that does not exist at 40 GB and may never exist.\n\nWhat the correct answer honestly costs: one instance is one failure domain and one ceiling. You will need replicas for read scale and failover, and you are accepting that some future growth may force a migration. That is usually the better trade — paying distributed-transaction complexity for three years to avoid a migration you may never need is a worse deal than doing the migration if and when the numbers demand it. If the numbers were 300,000 bookings/s or 40 TB, this answer flips.",
+      "resource": {
+        "title": "Designing Data-Intensive Applications, Chapter 2: Data Models and Query Languages",
+        "url": "https://dataintensive.net/",
+        "kind": "chapter"
+      }
+    },
+    {
+      "id": "db-storage-engines-002",
+      "type": "multi",
+      "category": "databases",
+      "topic": "storage-engines",
+      "difficulty": 2,
+      "sequence": 2,
+      "prompt": "You replace a B-tree storage engine with a log-structured merge engine using leveled compaction, keeping the same hardware and the same workload. Which effects should you expect?",
+      "options": [
+        "A point lookup may have to check several files on disk, making bloom filters load-bearing",
+        "Random-insert throughput improves, because writes are batched and written sequentially",
+        "Disk usage can exceed the live dataset size until compaction catches up",
+        "Range scans over a key prefix become impossible without a secondary index",
+        "Reads never observe data that compaction has not yet merged"
+      ],
+      "answers": [0, 1, 2],
+      "explanation": "The three correct statements are the three consequences of the same design decision: an LSM engine never updates in place, so a key's current value may live in the in-memory table or in any of several on-disk levels, and obsolete versions persist until compaction removes them.\n\nThat structure is why a point lookup may check the memtable and then one file per level, which is read amplification, and why bloom filters stop being an optimisation and become structural — without them, every miss pays a disk read at every level. It is also why random-insert throughput improves: the engine buffers writes in memory and flushes sorted runs sequentially, converting the scattered page writes a B-tree would perform into large sequential ones. And it is why on-disk size can exceed the live dataset: superseded versions and tombstones occupy space until a compaction merges them away, which is space amplification.\n\n\"Range scans become impossible without a secondary index\" encodes a genuinely common misconception — that log-structured means unordered, as if the engine were hash-based. The files are sorted runs; that is what the *merge* in the name refers to. A range scan is a merged iteration across levels, which costs more than a B-tree's leaf traversal but is entirely supported and is one of the reasons LSM engines are used for ordered key-value workloads at all. \"Reads never observe unmerged data\" inverts the mechanism: a read *must* consult unmerged data, because the newest version of a key is precisely the one that has not yet been compacted downward. If reads only saw compacted data they would serve stale values.\n\nWhat the swap costs overall: you trade a predictable write path for a cheaper one with a background process that competes with foreground traffic. When compaction falls behind, the engine throttles ingest and your latency tail moves — a failure mode B-trees do not have. The gain is real for write-heavy and ingest-heavy work; for a read-dominated workload that fits in memory, you have taken on tail-latency risk in exchange for very little.",
+      "resource": {
+        "title": "RocksDB Wiki: Leveled Compaction",
+        "url": "https://github.com/facebook/rocksdb/wiki/Leveled-Compaction",
+        "kind": "documentation"
+      }
+    },
+    {
+      "id": "db-migrations-001",
+      "type": "order",
+      "category": "databases",
+      "topic": "migrations",
+      "difficulty": 2,
+      "sequence": 1,
+      "prompt": "You must rename a column from `email` to `contact_email` on a table read and written by a fleet of application servers that deploy gradually. There must be no read or write downtime, and it must be possible to stop and reverse at any step. Put the steps in order.",
+      "items": [
+        "Deploy code that writes both columns and reads the old column",
+        "Add the new column as nullable, with no application change",
+        "Backfill the new column for existing rows, in batches",
+        "Deploy code that reads the new column and still writes both",
+        "Deploy code that reads and writes only the new column",
+        "Drop the old column"
+      ],
+      "correct": [1, 0, 2, 3, 4, 5],
+      "explanation": "The constraint that fixes this order is that deploys are gradual, so at every moment two versions of the application are running against one schema. Each step must therefore be safe with both its predecessor and its successor live.\n\nAdding a nullable column is invisible to code that does not know about it, so it goes first and is safe on its own. Dual-writing must come before the backfill, and this is the step people invert: if you backfill first, every row written between the backfill and the dual-write deploy has an empty new column, and you would have to backfill again. Once all writers populate both columns, the backfill has no moving target and can run in batches without a consistent-snapshot requirement. Reading the new column comes only after the backfill completes, and writes stay dual so that a rollback to the previous version still finds the old column populated. Only when no deployed version references the old column is it safe to drop, and dropping is the one irreversible step, which is why it is last.\n\nThe property this buys is that every step before the last can be reverted by redeploying the previous version, with no data loss. That is the actual point of the sequence — not the renaming, which a single statement could do, but the reversibility.\n\nWhat it costs: five or six deploys, a period where the table carries duplicated data, and application code carrying a dual-write path. Dual-write paths drift; someone adds a write site that updates only one column, and you get silent divergence that the backfill has already finished covering. For a small table on a system that can tolerate a brief lock, a single `ALTER TABLE ... RENAME COLUMN` with a coordinated deploy is dramatically cheaper and is the right answer. This sequence earns its complexity only when downtime is genuinely unacceptable and the table is large enough that the rewrite or lock would be long.\n\nOne engine-specific note: whether adding a column is cheap depends on the column definition. In current PostgreSQL, adding a column with no default or with a non-volatile default does not rewrite the table — the default is evaluated once and kept in the table's metadata. Adding one with a *volatile* default, a stored generated column, or an identity column rewrites the whole table and its indexes, which on a large table is exactly the outage this sequence exists to avoid. Older versions rewrote for any default at all, which is why some teams still add columns as nullable by reflex.",
+      "resource": {
+        "title": "PostgreSQL Documentation: ALTER TABLE",
+        "url": "https://www.postgresql.org/docs/current/sql-altertable.html",
+        "kind": "reference"
+      }
+    },
+    {
+      "id": "db-schema-design-001",
+      "type": "open",
+      "category": "databases",
+      "topic": "schema-design",
+      "difficulty": 2,
+      "sequence": 1,
+      "timebox_minutes": 15,
+      "prompt": "Design the database schema for an audit log recording every change to customer records in a business product. It takes 200 write events per second sustained, must retain events for 7 years, and is queried two ways: everything that happened to one customer, and everything one user did in a given month. Compliance requires that a recorded event is never modified after it is written. Give the tables, keys and indexes, and explain how the design holds up across the retention period.",
+      "rubric": [
+        {
+          "dimension": "requirements",
+          "weight": 20,
+          "looks_for": [
+            "Asks whether the two query paths are interactive or batch/export, and states how the answer changes the design",
+            "Asks what is stored per event — a full before/after snapshot, a field-level diff, or only the names of changed fields — and commits to one rather than leaving it open",
+            "States that events are append-only and derives a concrete consequence: no update path, no mutable status column, immutability enforced by permissions or by storage choice rather than by convention",
+            "Notices that the user-activity query is bounded to a month and uses that bound in the design instead of treating both queries as unbounded"
+          ]
+        },
+        {
+          "dimension": "estimation",
+          "weight": 25,
+          "looks_for": [
+            "Computes the total event count over the retention period (200/s times roughly 31.5 million seconds per year times 7, so about 4.4 x 10^10 events) rather than reasoning qualitatively about a large volume",
+            "Estimates bytes per event and derives total storage from it (for example 500 B per event giving roughly 22 TB), and uses that figure to rule out a single unpartitioned table",
+            "Uses the per-day volume (roughly 17 million events per day) to justify the specific partition granularity chosen, rather than picking a granularity by habit",
+            "Observes that 200 writes/s is a modest write rate and states explicitly that the design problem is retention volume rather than write throughput"
+          ]
+        },
+        {
+          "dimension": "architecture",
+          "weight": 25,
+          "looks_for": [
+            "Commits to time-based partitioning, names the granularity, and justifies it from the computed daily volume",
+            "Names the index that serves the per-customer query and the index that serves the per-actor query, and recognises that these are two different access paths over the same rows",
+            "Proposes moving partitions past a stated age to cheaper storage or an export format, and names what that costs — query latency, loss of SQL access, or both",
+            "States how partitions are created and dropped over time as an automated process, rather than treating partitioning as a one-time schema decision"
+          ]
+        },
+        {
+          "dimension": "tradeoffs",
+          "weight": 20,
+          "looks_for": [
+            "Commits to snapshots or to diffs and states what that costs against the alternative: snapshots cost storage and are trivially readable, diffs cost reconstruction logic and make point-in-time questions expensive",
+            "States what the second index costs on an append-only table at this volume, and accepts that cost explicitly rather than adding indexes silently",
+            "Names what a partitioned relational table costs against an append-only log or a columnar store for this workload, and commits to one",
+            "Takes a position on whether the per-actor query belongs on the same table or needs a separate access path, and states the cost of the position taken"
+          ]
+        },
+        {
+          "dimension": "communication",
+          "weight": 10,
+          "looks_for": [
+            "Presents the schema concretely, with named tables, named key columns and named indexes, rather than describing it in prose",
+            "States retention and immutability as firm design commitments rather than as open questions for later",
+            "Flags which parts of the design would change if the under-specified points were answered differently"
+          ]
+        }
+      ],
+      "model_answer": "A strong answer starts by doing the arithmetic, because the arithmetic is what decides the design. 200 events/s for seven years is roughly 4.4 x 10^10 events; at a few hundred bytes each that is tens of terabytes. Meanwhile 200 writes/s is nothing. Saying this out loud reframes the problem correctly: this is a retention and access-path problem, not a throughput problem.\n\nThe core table is a single append-only events table keyed by a generated event id, carrying at minimum the customer id, the acting user id, an event timestamp, an event type, and the payload. It is partitioned by the event timestamp, at a granularity the daily volume justifies — roughly 17 million events per day makes monthly partitions of around half a billion rows, which is large, so a strong answer either goes daily or explains why monthly is acceptable given the storage engine. The per-customer query is served by an index leading with the customer id; the per-actor query is served by a separate index leading with the acting user id, and a strong answer notices that because the query is bounded to a month, that index only needs to be useful within a partition.\n\nOn immutability, a strong answer does something structural rather than promising not to run UPDATE: revoking update and delete privileges on the table, or writing to storage that does not support in-place modification. It also explicitly does not add a mutable column such as a status or a soft-delete flag, because that reintroduces the very mutation the requirement forbids.\n\nOn growth, a strong answer tiers: recent partitions stay in the operational database, older partitions move to cheaper storage or to an exported columnar format, and the answer says what is lost when they move — usually interactive latency and full SQL. It also treats partition creation and retirement as an automated job rather than a manual task, because over seven years nobody will remember.\n\nThe payload decision is the one most candidates skip. Full snapshots make every question answerable and cost storage linearly; field-level diffs cost far less storage but make \"what did this record look like on a given date\" a replay operation. Either is defensible. What is not defensible is leaving it unstated, because the whole storage estimate depends on it.\n\nA different sound approach is not a worse one. An answer that puts the audit log outside the relational database entirely — an append-only log with a columnar analytical store for both query paths — is at least as good, and arguably better at this volume, provided it addresses immutability, the two access paths, and retention with the same rigour. An answer that keeps everything in one partitioned relational table and justifies it from the modest write rate is also sound. Grade the reasoning and the explicit costing, not the resemblance to the design above.",
+      "curveballs": [
+        "Compliance now requires that any single event be retrievable by id within 200 ms even in year seven, including from the oldest data. Which part of your storage tiering breaks, and what do you change?",
+        "Write volume turns out to be bursty: 200/s on average, but 6,000/s for ten minutes whenever a customer runs a bulk import. What happens to your write path and your partitioning during that window?",
+        "Legal requires you to delete every event for one customer, to satisfy an erasure request. Your table is append-only and partitioned by time. What do you do, and what does it cost you?"
+      ],
+      "resource": {
+        "title": "PostgreSQL Documentation: Table Partitioning",
+        "url": "https://www.postgresql.org/docs/current/ddl-partitioning.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-isolation-002",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "isolation",
+      "difficulty": 3,
+      "sequence": 2,
+      "prompt": "A team ports an application from MySQL with InnoDB to PostgreSQL without changing any transaction code and without setting an isolation level explicitly. A report that runs several `SELECT` statements inside one transaction used to see a mutually consistent picture, and now sometimes sees rows from different points in time. What explains this?",
+      "options": [
+        "PostgreSQL has no repeatable-read semantics, so the report must become a single query",
+        "PostgreSQL's default permits dirty reads, so the report can now see uncommitted rows",
+        "PostgreSQL releases read locks at each statement boundary, whereas InnoDB holds them until commit",
+        "PostgreSQL's default snapshots each statement, while InnoDB's default snapshots the transaction"
+      ],
+      "answer": 3,
+      "explanation": "The two engines have different default isolation levels, and the difference is exactly visible in this symptom. InnoDB defaults to REPEATABLE READ, where consistent non-locking reads all share the snapshot established by the transaction's first read — so several `SELECT`s in one transaction are consistent with each other by default. PostgreSQL defaults to READ COMMITTED, where each statement takes a fresh snapshot, so two statements in one transaction can legitimately see different committed states. Same code, different default, different behaviour. The fix is to state the level explicitly, which is the durable lesson: never inherit an isolation level you have not chosen.\n\n\"PostgreSQL has no repeatable-read semantics\" is wrong in an instructive direction. PostgreSQL implements REPEATABLE READ, and its implementation is *stronger* than the SQL standard demands — it forbids phantom reads, which the standard permits at that level, because the standard specifies which anomalies must not occur and exceeding it is conformant. \"PostgreSQL's default permits dirty reads\" is the misconception the level's name invites; READ COMMITTED means reads see only committed data, and PostgreSQL does not implement READ UNCOMMITTED as a distinct behaviour at all — asking for it gets you READ COMMITTED. \"PostgreSQL releases read locks at each statement boundary\" attributes the behaviour to locking; both engines serve these reads from multiple row versions and take no read locks, so the difference is the *scope of the snapshot*, not the lifetime of a lock.\n\nWhat the fix costs, and why READ COMMITTED is a sensible default despite this: a repeatable-read transaction holds its snapshot for its entire life, which prevents reclamation of row versions that were obsoleted after it started. A long-running repeatable-read report is a well-known source of table bloat. It also surfaces serialisation failures that READ COMMITTED silently avoids, so the application must be prepared to retry. For short transactional work, statement-scoped snapshots are cheaper and sufficient — the mistake is running a multi-statement report under them by accident.",
+      "resource": {
+        "title": "MySQL 8.4 Reference Manual: Transaction Isolation Levels",
+        "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-transaction-isolation-levels.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-sharding-001",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "sharding",
+      "difficulty": 3,
+      "sequence": 1,
+      "prompt": "A messaging product shards its `messages` table across 16 nodes and takes 20,000 writes/s. The dominant read is the most recent 50 messages in one conversation. Measurement shows 0.1% of conversations carry 40% of all messages. Which shard key fits best?",
+      "options": [
+        "`hash(message_id)`, for the most even possible distribution of rows across nodes",
+        "`hash(conversation_id)`, so all of one conversation lives on a single node",
+        "`hash(conversation_id, time_bucket)`, so one conversation spans a few nodes",
+        "`conversation_id` range-partitioned, so adjacent conversations share a node"
+      ],
+      "answer": 2,
+      "explanation": "Two requirements pull against each other here. The dominant read wants a conversation's recent messages co-located, which argues for keying on the conversation. The measured skew — one conversation in a thousand carrying four hundred times its share of traffic — makes conversation-only keying produce hot nodes that no amount of rebalancing fixes. Adding a coarse time component resolves the tension: the newest bucket for a conversation serves the recent-50 read from one place, while a high-volume conversation's history spreads across buckets and therefore across nodes.\n\n`hash(conversation_id)` encodes the most common sharding misconception: that hashing the natural entity fixes skew. Hashing distributes *keys* evenly, not *volume*. A single very active conversation hashes to exactly one node and stays there, so the hot key survives the hash untouched. `hash(message_id)` encodes the belief that maximum evenness is the goal; it achieves perfect balance and destroys the only read that matters, turning every recent-50 query into a scatter-gather across all 16 nodes with a merge on top. Range-partitioning on `conversation_id` keeps the hot-key problem and adds a new one — contiguous ranges of identifiers are often correlated with creation time, so newly created conversations cluster onto whichever node holds the high end of the range, and you inherit ongoing range-splitting work.\n\nWhat the correct answer costs, plainly: the recent-50 read is no longer a single-node lookup in the general case. If the newest bucket holds fewer than 50 messages you must consult the previous one, so the read path needs bucket-boundary logic and may fan out to two or three nodes. You also need a bucket width, and choosing it wrongly either reintroduces hotspots (too wide) or makes every read fan out (too narrow). Writes must compute the bucket consistently, which becomes a compatibility surface.\n\nThe assumption that makes this the right answer is that the skew is persistent rather than transient. If the hot conversations were few, stable and identifiable, `hash(conversation_id)` plus a cache in front of those conversations is simpler, keeps every read single-node, and is a perfectly defensible design. The composite key earns its complexity when the hot set is large, shifting, or unpredictable.",
+      "source_note": "Adapted from the recurring messaging/hot-conversation archetype found across reported interview questions; not attributed to a specific company.",
+      "resource": {
+        "title": "Amazon DynamoDB Developer Guide: Designing Partition Keys to Distribute Workloads",
+        "url": "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/bp-partition-key-design.html",
+        "kind": "documentation"
+      }
+    },
+    {
+      "id": "db-query-planning-001",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "query-planning",
+      "difficulty": 3,
+      "sequence": 1,
+      "prompt": "A query that ran in 20 ms for months now takes 40 s. The plan changed from an index scan to a sequential scan. The table has been growing steadily, neither the query nor the schema changed, and forcing the index makes it fast again. What is the most likely cause?",
+      "options": [
+        "The planner's statistics are stale, so its row-count estimate is now wrong",
+        "The index has become fragmented and now needs to be dropped and rebuilt",
+        "The table has grown past the size where an index scan can beat a sequential scan",
+        "The index no longer fits in memory, so the planner stops considering it"
+      ],
+      "answer": 0,
+      "explanation": "A cost-based planner chooses among plans using *estimates*, so when the plan flips and the query did not change, the estimate moved. On a steadily growing table, statistics collection that cannot keep pace leaves the planner working from an old sample; it over-estimates how many rows the predicate will match, and past a threshold a sequential scan genuinely looks cheaper on paper. The diagnostic is to compare estimated against actual row counts in the executed plan, not to guess — a plan that estimates 900 rows and returns 900,000 has told you where the problem is.\n\n\"The index has become fragmented\" is folklore imported from engines and eras where index rebuilds were routine maintenance. Bloat is real and can make an index scan slower in absolute terms, but it does not flip the planner's *decision* the way a bad estimate does. The evidence in the scenario refutes it directly: forcing the index makes the query fast, which proves the index is perfectly usable. \"The table has grown past the size where an index scan can beat a sequential scan\" mistakes the threshold's nature — what decides is *selectivity*, not size. An index scan returning 0.01% of a billion-row table is still the right plan; there is no absolute row count past which indexes stop working. \"The index no longer fits in memory\" assumes the planner inspects live cache contents. It does not; cost models use assumed cache-hit ratios as static parameters, so what is currently buffered cannot cause a plan change.\n\nWhat the real fix costs: collecting statistics more often or more finely costs background I/O and CPU, and on a very large table a higher statistics target makes analysis meaningfully slower. That is a real, ongoing cost and worth naming.\n\nWhy the hint is the wrong thing to ship even though it works: it freezes today's plan against tomorrow's data. The moment the distribution shifts again, the forced plan becomes the outage, and now nothing will correct it because you have removed the planner's discretion. The defensible version of using it is as an incident measure — stop the bleeding now, fix the statistics, then remove the hint.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Statistics Used by the Planner",
+        "url": "https://www.postgresql.org/docs/current/planner-stats.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-storage-engines-003",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "storage-engines",
+      "difficulty": 3,
+      "sequence": 3,
+      "prompt": "A service stores 80 GB of user profiles. The workload is 95% random point reads by primary key and 5% single-row updates, at 3,000 requests/s, with a required p99 under 10 ms. Which storage engine choice fits best?",
+      "options": [
+        "An LSM engine with leveled compaction, since updates avoid in-place page writes",
+        "A B-tree engine, since a point read costs a predictable number of page accesses",
+        "An LSM engine with size-tiered compaction, since it minimises compaction work",
+        "An LSM engine with a large bloom filter budget, since that removes the read penalty"
+      ],
+      "answer": 1,
+      "explanation": "Match the engine to the dominant access pattern and the latency requirement, and this workload is unambiguous: it is a read workload with a tight tail. A B-tree resolves a point read by descending a shallow tree — a small, bounded number of page accesses, most of them cached at this dataset size — with no background process competing for I/O. That predictability is what a p99 requirement is asking for.\n\nThe first option is recency bias wearing a technical justification. 5% of 3,000 requests/s is 150 updates/s, which is nothing; optimising the write path here buys essentially no throughput while importing compaction as a new source of latency variance. The third option shows real knowledge of compaction strategies and then selects on the wrong axis: minimising compaction work is not the goal, and size-tiered compaction *increases* read amplification and space amplification relative to leveled, which is precisely the wrong direction for a read-dominated workload with a latency target. The fourth option correctly identifies that bloom filters help and over-credits them: a bloom filter cheaply excludes levels that do *not* contain a key, which is useless for the common case here, where the profile being read exists. And bloom filters do nothing about compaction's I/O contention, which is the actual threat to the p99.\n\nWhat the boring answer costs: a B-tree pays write amplification of its own, because modifying one row eventually writes a whole page, and it is more sensitive to random-write-heavy workloads. Under sustained random inserts at high volume it is the weaker choice.\n\nWhen this answer flips: if the write share rose substantially, or the dataset grew to where it no longer largely fits in memory and the write pattern became random-insert-heavy, the LSM trade becomes favourable. There is also an honest operational consideration that often dominates both: the engine your team already runs, monitors and can debug at 03:00 is worth several percent of theoretical throughput. An answer that picks the B-tree because it is what the team operates, and says so, is reasoning correctly.",
+      "resource": {
+        "title": "RocksDB Wiki: RocksDB Tuning Guide",
+        "url": "https://github.com/facebook/rocksdb/wiki/RocksDB-Tuning-Guide",
+        "kind": "documentation"
+      }
+    },
+    {
+      "id": "db-transactions-002",
+      "type": "multi",
+      "category": "databases",
+      "topic": "transactions",
+      "difficulty": 3,
+      "sequence": 2,
+      "prompt": "An order service and a payment service each own their database. A business operation must either charge the customer and create the order, or do neither. The team replaces a distributed two-phase commit with a saga of local transactions plus compensating actions. Which consequences follow?",
+      "options": [
+        "Other readers can observe a state where the payment exists but the order does not",
+        "Each compensating action must be idempotent, because it may be retried",
+        "The operation no longer holds locks across both services for its duration",
+        "The operation becomes atomic in the ACID sense across both services",
+        "Any failed step can be undone, because every action has an inverse"
+      ],
+      "answers": [0, 1, 2],
+      "explanation": "A saga replaces one distributed transaction with a sequence of local ones, each committing independently. Everything true and everything false about the pattern follows from that single fact.\n\nBecause each local transaction commits on its own, the intermediate states are real and visible — after the charge commits and before the order does, the world genuinely contains a payment with no order, and anything reading either database can see it. Because recovery is driven by a coordinator that retries until it succeeds, compensating actions will be invoked more than once whenever an acknowledgement is lost, so idempotency is a requirement rather than a nicety. And because no participant waits on a coordinator's decision, no participant holds locks on behalf of the overall operation — which is the availability win the pattern exists to deliver.\n\n\"The operation becomes atomic in the ACID sense\" is the central misconception about sagas, and it is worth stating bluntly: a saga gives you *eventual completion or eventual compensation*, not atomicity, and it explicitly gives up isolation. Describing a saga as \"distributed transactions without the downsides\" is how teams end up surprised by intermediate states in production. \"Any failed step can be undone, because every action has an inverse\" confuses compensation with rollback. A rollback erases; a compensation is a new forward action that attempts to offset a previous one. Some actions have no true inverse — an email that has been sent, a physical shipment dispatched, a payment past its reversal window — and for those the compensation is an approximation with business consequences, which is a design problem rather than a technical one.\n\nWhat two-phase commit buys in exchange, and when to prefer it: it gives real atomicity and isolation across participants, at the cost of a coordinator whose failure can leave participants blocked while holding locks, which couples everyone's availability together. Inside one trust and latency domain, for short transactions, where an observable intermediate state is genuinely unacceptable — money moving between two accounts is the classic case — two-phase commit is the better answer, and one database holding both sides is better still. Sagas earn their complexity when participants must remain independently available and the business can define meaningful compensations.",
+      "resource": {
+        "title": "Sagas (Garcia-Molina and Salem, 1987)",
+        "url": "https://www.cs.cornell.edu/andru/cs711/2002fa/reading/sagas.pdf",
+        "kind": "paper"
+      }
+    },
+    {
+      "id": "db-indexing-003",
+      "type": "match",
+      "category": "databases",
+      "topic": "indexing",
+      "difficulty": 3,
+      "sequence": 3,
+      "prompt": "Match each access requirement to the index mechanism that fits it best. Not every mechanism on the right is used.",
+      "left": [
+        "Find all rows whose JSON document contains a given tag, across 50 million rows",
+        "Look up rows by an exact 64-byte opaque token, with no range or prefix queries",
+        "Filter on two independent low-cardinality columns whose combination is highly selective, across many possible combinations",
+        "Enforce that no two active rows share an email address, while inactive rows may duplicate it",
+        "Serve `ORDER BY created_at DESC LIMIT 20` on a table where 98% of rows are archived and never queried"
+      ],
+      "right": [
+        "A covering index including every projected column",
+        "A hash index on the token column",
+        "An inverted index over the document's terms",
+        "A clustered index on the primary key",
+        "A partial unique index over the active rows",
+        "A bitmap combination of two single-column indexes",
+        "A partial index restricted to the non-archived rows"
+      ],
+      "pairs": [[0, 2], [1, 1], [2, 5], [3, 4], [4, 6]],
+      "explanation": "The principle is that the index type follows the *shape of the predicate*, not the datatype of the column. Each of these five requirements has a differently shaped predicate, and each shape has a mechanism built for it.\n\nContainment over a document is a many-values-per-row predicate, which is what an inverted index is: it maps each term to the rows containing it, rather than mapping each row to one key. Exact lookup of a large opaque value with no ordering requirement is the one case where a hash index is genuinely the better tool — it stores a small hash rather than the full 64-byte key, so the index is substantially smaller, and giving up range and prefix queries costs nothing because the requirement explicitly does not need them. Two low-cardinality columns with many combinations is the case for combining single-column indexes into a bitmap per query: building one composite index per useful combination does not scale, while bitmap combination handles arbitrary pairings at query time. Enforcing uniqueness over a subset of rows is what a partial unique index does, and it is the only mechanism here that enforces a constraint rather than accelerating a read. Serving a recency query over a table that is almost entirely archived is the performance use of a partial index: excluding 98% of rows makes the index a fraction of its full size, so more of it stays cached.\n\nThe two unused options are unused for specific reasons. A covering index is seductive on every one of these because coverage helps almost any read — but it is an orthogonal property you can add to several of these mechanisms, not the answer to any of these particular shapes. A clustered index on the primary key describes where the rows physically live, which is a table-level storage decision rather than a response to any of these predicates.\n\nWhat these choices cost. A partial index only helps queries the planner can prove imply its predicate, so a query that omits the condition gets nothing from it and you now maintain an index that some queries ignore. A hash index is equality-only and gives you no ordering, no range scans and no prefix matching — an irreversible narrowing if the access pattern later changes. Bitmap combination costs CPU and memory to build the bitmap per query and loses ordering, so it does not help an `ORDER BY ... LIMIT`. And an inverted index over documents is substantially larger and more expensive to maintain per write than a scalar index, because one row produces many entries.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Index Types",
+        "url": "https://www.postgresql.org/docs/current/indexes-types.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-replication-002",
+      "type": "open",
+      "category": "databases",
+      "topic": "replication",
+      "difficulty": 3,
+      "sequence": 2,
+      "timebox_minutes": 15,
+      "prompt": "A product runs one primary PostgreSQL instance with two asynchronous replicas in the same region, serving 12,000 reads/s and 900 writes/s. Leadership now requires surviving the loss of the primary with at most 30 seconds of unavailability and no loss of acknowledged writes. Design the change, and state what the application must handle.",
+      "rubric": [
+        {
+          "dimension": "requirements",
+          "weight": 20,
+          "looks_for": [
+            "Asks whether no loss of acknowledged writes means every commit must be durable on a second node before the client is told it succeeded, and commits to that reading",
+            "Establishes whether reads may serve stale data during and after failover, and states which answer the design assumes",
+            "States explicitly that a 30-second recovery objective rules out a human-driven runbook and requires automated failover",
+            "Asks whether the loss of the primary could mean the loss of the whole region, since a same-region design does not cover that"
+          ]
+        },
+        {
+          "dimension": "estimation",
+          "weight": 10,
+          "looks_for": [
+            "States the added commit latency synchronous replication implies for a same-region round trip plus standby processing, and checks it against 900 writes/s",
+            "Notes that the surviving nodes must absorb 12,000 reads/s during failover, and says whether two nodes can carry it",
+            "Divides the 30-second budget into detection, promotion and client reconnection rather than treating it as one number"
+          ]
+        },
+        {
+          "dimension": "architecture",
+          "weight": 25,
+          "looks_for": [
+            "Commits to synchronous replication to at least one standby, and names what level of acknowledgement is required — received, flushed to disk, or replayed",
+            "Specifies at least three data nodes so one standby can be lost without either losing the durability guarantee or blocking writes, and explains why two nodes are not enough",
+            "Names the component that detects failure and promotes a standby, and states how split brain is prevented",
+            "States how clients find the new primary — a virtual endpoint, a proxy, or rediscovery — rather than leaving it implicit"
+          ]
+        },
+        {
+          "dimension": "tradeoffs",
+          "weight": 30,
+          "looks_for": [
+            "Commits to a behaviour when the synchronous standby is unreachable — block writes and preserve the guarantee, or degrade to asynchronous and accept possible loss — and argues for the choice rather than describing both",
+            "States what synchronous replication costs against the current setup, in commit latency and in coupling the primary's write availability to a standby's health, and accepts it",
+            "Names what requiring replay on the standby costs against requiring only a flush to disk, and commits to one",
+            "Takes a position on whether automated failover's risk of spurious promotion is worth the 30-second objective, against a slower and safer manual process",
+            "States that same-region synchronous replication does not survive the loss of the region, and either accepts that limit explicitly or prices cross-region replication against it"
+          ]
+        },
+        {
+          "dimension": "communication",
+          "weight": 15,
+          "looks_for": [
+            "States the durability guarantee the final design provides in one unambiguous sentence, including the failure it does not cover",
+            "Separates what the database provides from what the application must handle: connection errors, retrying on read-only or serialisation errors, and idempotent writes",
+            "Presents the failover sequence as ordered steps with the responsible component named at each step"
+          ]
+        }
+      ],
+      "model_answer": "The two requirements together are what make this a design problem rather than a configuration change. No loss of acknowledged writes means a commit cannot be acknowledged until it is durable somewhere other than the primary, which means synchronous replication. A 30-second recovery objective means no human is in the loop. A strong answer says both of those in the first thirty seconds and then deals with the consequence.\n\nThe consequence is that two nodes are not enough. With one primary and one synchronous standby, losing the standby forces a choice between blocking all writes and silently abandoning the guarantee. With three data nodes and a requirement that any one standby acknowledge, you can lose a standby and keep both writing and the guarantee. A strong answer reaches this conclusion explicitly rather than arriving at three nodes by convention.\n\nIt then specifies the acknowledgement level and knows there is a difference. Waiting for the standby to have the data on disk is cheaper; waiting for it to have replayed the change is more expensive and is what makes a read on that standby immediately consistent with the primary. Either can be right, and the answer should say which it chose and why.\n\nOn failover, the answer names a manager that holds leader election outside the database nodes themselves, and addresses fencing — the demoted primary must be prevented from accepting writes, not merely asked to stop. It says how clients reach the new primary, because an otherwise correct failover that leaves clients pointed at a dead address has not met the 30-second objective. And it divides the budget: detection cannot be instant without risking spurious promotion on a transient network blip, so a strong answer picks a detection window and accepts what it implies.\n\nThe question most candidates leave unanswered is the one that matters most operationally: what happens when the synchronous standby is merely *slow* rather than dead. Blocking writes preserves the stated guarantee and makes a degraded standby into a full outage. Degrading to asynchronous preserves availability and quietly voids the guarantee leadership asked for. A strong answer commits to one, names who is allowed to make that call, and says how the choice becomes visible when it happens.\n\nFinally, it states what the application owns: connections will break, some transactions will fail with ambiguous outcomes, and writes must therefore be safely retryable. A design that makes the database bulletproof and leaves the client assuming every commit either clearly succeeded or clearly failed has moved the problem rather than solved it.\n\nA different sound approach is not a worse one. An answer that reaches for a managed service or a consensus-replicated database and argues the trade honestly — less control and a migration, in exchange for not operating failover machinery with a team that has never done it — is reasoning well, not dodging. An answer that argues the 30-second objective is not worth the cost and proposes negotiating it is also legitimate, provided it says what the cheaper target buys. Grade the explicit costing and the handling of the degraded-standby case, not the resemblance to the design above.",
+      "curveballs": [
+        "The synchronous standby's disk begins failing and its fsync latency rises to 400 ms. Your p99 write latency follows it upward. What does the system do, and who decides?",
+        "A network partition isolates the primary from both standbys but not from the application, and writes keep arriving. What happens, and what should happen?",
+        "Leadership adds a requirement to survive the loss of the entire region, with the same 30-second objective. What in your design survives that change, and what has to be rebuilt?"
+      ],
+      "resource": {
+        "title": "PostgreSQL Documentation: Log-Shipping Standby Servers",
+        "url": "https://www.postgresql.org/docs/current/warm-standby.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-migrations-002",
+      "type": "open",
+      "category": "databases",
+      "topic": "migrations",
+      "difficulty": 3,
+      "sequence": 2,
+      "timebox_minutes": 20,
+      "prompt": "A 900 GB `events` table on a single PostgreSQL primary must become time-partitioned, because queries now scan whole months and a retention policy needs to drop old data cheaply. The table takes 40,000 inserts per minute and is read by two applications you own plus one reporting tool owned by another team. There is no maintenance window. Plan the migration.",
+      "rubric": [
+        {
+          "dimension": "requirements",
+          "weight": 25,
+          "looks_for": [
+            "Asks whether historical rows must move into partitions or whether partitioning new data going forward is sufficient, and states how the answer changes the plan's length",
+            "Asks what the reporting tool actually queries and whether its SQL can be changed, and commits to a plan that works under the less convenient answer",
+            "Establishes the retention period, because it determines partition granularity and the resulting partition count",
+            "States that partition pruning requires the partition key to appear in query predicates, and checks whether existing queries include it"
+          ]
+        },
+        {
+          "dimension": "estimation",
+          "weight": 15,
+          "looks_for": [
+            "Derives the daily insert volume (40,000 per minute, about 58 million rows per day) and uses it to choose partition granularity",
+            "Estimates how long copying 900 GB takes at a stated throughput, and uses that figure to decide between copy-and-swap and partition-forward-only",
+            "Estimates how many partitions the chosen granularity yields over the retention period, and checks that query planning time at that partition count is acceptable"
+          ]
+        },
+        {
+          "dimension": "architecture",
+          "weight": 20,
+          "looks_for": [
+            "Commits to a partition key and granularity, and justifies both from the query patterns and the retention policy",
+            "Specifies the mechanism by which readers see a single object while data lives in many — a partitioned parent table, or a view spanning old and new storage — and names it",
+            "States the cutover sequence and how the old table is retired",
+            "Specifies future partition creation and old partition removal as an automated process rather than a manual task"
+          ]
+        },
+        {
+          "dimension": "tradeoffs",
+          "weight": 20,
+          "looks_for": [
+            "Commits to either a full backfill or partition-forward-only, and states what the choice costs: a long-lived dual-read path and ongoing complexity, against weeks of copying and temporarily doubled storage",
+            "States what partitioning costs against the current single table — planning overhead at high partition counts, the loss of a unique constraint that does not include the partition key, and more expensive cross-partition queries",
+            "Names the risk created by the reporting tool it does not control, and commits to a specific mitigation rather than assuming that team will adapt",
+            "Prices the retention requirement on its own — batched deletes, or a separate archive table — against partitioning, and either argues why partitioning still wins or concedes that it does not"
+          ]
+        },
+        {
+          "dimension": "communication",
+          "weight": 20,
+          "looks_for": [
+            "Presents the plan as ordered steps that are individually reversible, rather than as a target state",
+            "States for each step what would cause the team to roll it back, and how the rollback works",
+            "Identifies who outside the team must be told what and when, specifically naming the reporting tool's owners",
+            "Names which single step is the riskiest and why, instead of presenting every step as equally safe"
+          ]
+        }
+      ],
+      "model_answer": "The decision that determines the whole plan is whether the 900 GB of history has to move. A strong answer surfaces this immediately and prices both branches. Copying 900 GB while taking 58 million inserts a day is weeks of careful work and temporarily doubled storage; partitioning only new data is fast but leaves a dual-read path across old and new storage that every reader must honour, possibly for the length of the retention period. Which is cheaper depends on how long the retention period is, and a strong answer asks.\n\nThe second decisive question is the reporting tool. A consumer whose SQL you cannot change constrains the design more than the data volume does: whatever you build, something must keep answering the original table name with the original semantics. That usually means the old name survives as a partitioned table or as a view, and a strong answer commits to keeping it rather than hoping the other team will adjust on your schedule.\n\nWith those settled, the mechanics are relatively routine. Choose a granularity that the daily volume justifies — around 58 million rows a day makes monthly partitions roughly 1.7 billion rows, which is probably too large, so daily or weekly is more defensible, and the answer should compute rather than assert. Create the partitioned structure alongside the existing table, route new writes into it, move or bridge history according to the earlier decision, verify, then cut readers over and retire the old table. Automate partition creation and dropping from the outset, because over a retention period nobody will do it by hand reliably.\n\nA strong answer also states what partitioning takes away. A unique constraint that does not include the partition key cannot be enforced across partitions, which is a real and frequently discovered-too-late consequence. Queries without a predicate on the partition key touch every partition and get slower, not faster. And planning time grows with partition count, so a granularity chosen for retention convenience can degrade a high-frequency query.\n\nThe most valuable thing a senior answer does here is question the premise once, briefly. If the only driver were cheap deletion of old data, batched deletes or a separate archive table might satisfy it at a fraction of the cost. The prompt also says queries now scan whole months, which does argue for partitioning — but an answer that checks whether both drivers are real before committing to a multi-week migration is demonstrating the right instinct, provided it then commits rather than stalling.\n\nA different sound approach is not a worse one. Moving the table to a purpose-built time-series or columnar store, and arguing the trade honestly, is a legitimate answer. So is partition-forward-only with a permanent view over an archived history. Grade whether the plan is reversible step by step, whether the uncontrolled consumer is handled concretely, and whether the costs of partitioning are named rather than assumed away.",
+      "curveballs": [
+        "Halfway through the backfill, replication lag to your read replicas reaches 20 minutes and the product team reports stale data. What do you change, and does the backfill continue?",
+        "The reporting tool turns out to issue `SELECT ... FROM events` with no time predicate at all. What does that do to your partitioned design, and what do you do about it?",
+        "Two weeks after cutover you need to drop the oldest partition, and discover a foreign key from another table pointing into it. What now?"
+      ],
+      "resource": {
+        "title": "PostgreSQL Documentation: Table Partitioning",
+        "url": "https://www.postgresql.org/docs/current/ddl-partitioning.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-isolation-003",
+      "type": "multi",
+      "category": "databases",
+      "topic": "isolation",
+      "difficulty": 4,
+      "sequence": 3,
+      "prompt": "Inside one InnoDB transaction at the default isolation level, an application runs a plain `SELECT` over a range of rows, then an `UPDATE` over the same range. Between the two statements, another session commits inserts into that range. Which statements describe what the first transaction observes and does?",
+      "options": [
+        "The plain `SELECT` does not see the new rows, because consistent reads use the snapshot from the transaction's first read",
+        "The `UPDATE` can affect the new rows, because locking statements read the latest committed state rather than the snapshot",
+        "The `UPDATE` takes gap or next-key locks over the range it scans, blocking further insertions into that range",
+        "The plain `SELECT` takes shared locks on the rows it reads, so the other session's inserts would have blocked",
+        "Because the isolation level is REPEATABLE READ, the `UPDATE` cannot affect rows the transaction has not already seen"
+      ],
+      "answers": [0, 1, 2],
+      "explanation": "The thing to understand is that InnoDB has two different read modes inside one transaction, and REPEATABLE READ only governs one of them. Non-locking reads are served from the snapshot established by the transaction's first read, so the plain `SELECT` cannot see rows committed after that point. Locking statements — `UPDATE`, `DELETE`, `SELECT ... FOR UPDATE`, `SELECT ... FOR SHARE` — do not use that snapshot; they read the latest committed state, because a statement that is going to modify or lock a row has to operate on the row that actually exists. So the `UPDATE` can touch rows the `SELECT` could not see, in the same transaction, at the same isolation level.\n\nThat is also why the `UPDATE` takes gap or next-key locks over the range it scans: having read current state, it must prevent new rows from appearing in that range before it commits, or its own effect would not be repeatable. The documented exception is worth remembering — for a unique index accessed with a unique search condition, InnoDB locks only the found record and not the preceding gap, because there is no range to protect.\n\n\"The plain `SELECT` takes shared locks\" is the misconception that multi-version reads are implemented with read locks. They are not; that is the entire point of keeping multiple row versions, and it is why the other session's inserts proceeded without blocking. \"REPEATABLE READ means the `UPDATE` cannot affect unseen rows\" is the error this question exists to expose: it assumes the snapshot governs every statement uniformly. MySQL's own documentation warns against mixing locking and non-locking statements inside a single REPEATABLE READ transaction for exactly this reason, and observes that a transaction wanting consistent behaviour across both probably wants SERIALIZABLE.\n\nA consequence worth noticing: after the `UPDATE` has modified rows, a subsequent plain `SELECT` in the same transaction can return rows the first `SELECT` did not, because the transaction now has its own versions of them. The snapshot is not violated — the transaction is seeing its own writes — but the observable effect is a result set that grew inside a supposedly repeatable read.\n\nWhat gap locking costs: it is the mechanism giving InnoDB's locking reads their phantom protection, and it is simultaneously the main source of insert contention and deadlocks in InnoDB, because a lock over a gap blocks inserts from unrelated rows that merely fall in the same range. Dropping to READ COMMITTED removes most gap locking and raises concurrency, at the price of the transaction-wide snapshot. That is a real and common production trade, not a theoretical one.",
+      "resource": {
+        "title": "MySQL 8.4 Reference Manual: InnoDB Locking",
+        "url": "https://dev.mysql.com/doc/refman/8.4/en/innodb-locking.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-replication-003",
+      "type": "match",
+      "category": "databases",
+      "topic": "replication",
+      "difficulty": 4,
+      "sequence": 3,
+      "prompt": "Match each observed symptom to the mechanism that produced it. Not every mechanism on the right is used.",
+      "left": [
+        "After failover, the cluster serves reads that are missing writes the old primary had acknowledged",
+        "Two nodes both accept writes as primary after a network partition heals",
+        "Replication lag grows steadily under a write-heavy batch job while the replica's CPU and disk both sit well below capacity",
+        "A replica falls permanently out of sync and cannot resume without a full rebuild",
+        "Failover completes, but application connections keep writing to the demoted node for several seconds"
+      ],
+      "right": [
+        "The primary discarded write-ahead log segments the replica had not yet consumed",
+        "Writes were acknowledged to clients before being propagated to any replica",
+        "No fencing step prevented the demoted node from accepting writes",
+        "Both nodes were promoted because neither could reach a quorum to arbitrate",
+        "The replica applies changes with less parallelism than the primary accepted them",
+        "The replica's disk throughput is saturated by checkpoint flushing",
+        "Clock skew between nodes caused conflicting version timestamps to be ordered wrongly"
+      ],
+      "pairs": [[0, 1], [1, 3], [2, 4], [3, 0], [4, 2]],
+      "explanation": "Each of these symptoms has one mechanism that explains it, and the diagnostic discipline is to ask which specific guarantee or resource was absent rather than reaching for the nearest familiar cause.\n\nLosing acknowledged writes across a failover means the acknowledgement was never conditional on replication — the primary told the client the write succeeded while the write existed only on the primary, so promoting a replica that never received it loses it. This is not exotic; it is the normal behaviour of asynchronous replication, and it is why \"we have replicas\" is not a durability claim. Two nodes both believing they are primary after a partition heals is split brain caused by promotion without quorum arbitration: each side of the partition independently decided it should lead, because nothing required a majority to authorise the decision. Lag growing while both CPU and disk sit idle rules out resource saturation and leaves only a concurrency limit — the replica is applying changes with less parallelism than the primary used to accept them, so a batch job that the primary absorbed across many sessions is replayed through a narrower path. A replica that cannot resume at all, as opposed to merely lagging, has lost its position in the log: the primary recycled segments the replica had not yet read, so there is no longer a continuous path from the replica's state to the primary's. And connections still writing to a demoted node after failover is a missing fence — the node was told it was no longer primary, or was simply unreachable by the manager, but nothing actively stopped it from serving writes.\n\nThe two unused mechanisms are there because each is a plausible first guess for one of these symptoms. Disk saturation from checkpoint flushing is the natural explanation for growing lag, which is why the symptom explicitly rules it out by stating that disk is below capacity — reading the constraint is part of the work. Clock skew ordering versions wrongly is a genuine hazard in multi-leader and leaderless systems that resolve conflicts by timestamp, but none of these symptoms involves conflicting concurrent writes to the same row.\n\nWhat the fixes cost. Fencing adds latency to every failover and, done properly, will sometimes refuse to promote because it cannot confirm the old primary is stopped — which trades availability for safety, deliberately. Quorum-based promotion requires an odd number of voting members and therefore more machines than the data strictly needs. Parallel apply on the replica raises throughput and weakens the guarantee that the replica passes through the same sequence of states the primary did, which matters if anything reads the replica expecting causal order. And retaining enough log to prevent a replica falling off permanently costs disk on the primary, and a slot that retains it indefinitely can fill that disk and take the primary down — a fix that becomes the next outage if it is not bounded.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Comparison of Different Solutions (High Availability)",
+        "url": "https://www.postgresql.org/docs/current/different-replication-solutions.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-sharding-002",
+      "type": "order",
+      "category": "databases",
+      "topic": "sharding",
+      "difficulty": 4,
+      "sequence": 2,
+      "prompt": "You are moving one tenant's data from an overloaded shard to a new, empty shard. Writes must not stop for more than a few seconds, and it must be possible to abort at any point before routing changes. Put the steps in order.",
+      "items": [
+        "Copy the tenant's existing rows to the destination shard",
+        "Update the routing table to point the tenant at the destination shard",
+        "Begin capturing the tenant's change stream from the source shard",
+        "Drain the remaining captured changes to the destination shard",
+        "Apply captured changes to the destination shard until lag is below a stated threshold",
+        "Resume writes for that tenant",
+        "Briefly reject or queue writes for that tenant",
+        "Compare row counts and checksums between the two shards"
+      ],
+      "correct": [2, 0, 4, 6, 3, 7, 1, 5],
+      "explanation": "The only unavoidable outage in this procedure is the window between suspending writes and having routing point at the new shard. Every step that can be done while writes continue must therefore happen before that window opens, and the ordering follows from that single objective.\n\nChange capture starts first, before the copy, because anything modified during the copy must be recorded; start capturing after the copy begins and you have a silent gap you cannot detect later. The bulk copy runs next, taking as long as it needs while the tenant keeps writing. Then captured changes are applied until lag is small — this is the step people omit, and it is what makes the outage short: the length of the write pause equals the delta still outstanding, so you deliberately shrink that delta first. Only then do you suspend writes, drain what remains, and verify.\n\nVerification sits inside the pause for a specific reason: it is the only moment both shards are quiescent and therefore comparable, and it is the last moment at which aborting costs nothing. Comparing counts and checksums while writes are flowing tells you very little. Routing flips after verification passes, and writes resume last.\n\nWhat this sequence costs: a change-capture pipeline you must build and operate, double storage for the tenant for the duration, and a verification step that lengthens the very pause you were minimising. It also has an unpleasant failure mode — if lag never falls below the threshold because the tenant writes faster than the destination applies, the procedure stalls indefinitely and you need a decision about whether to accept a longer pause or abort.\n\nFor a small tenant on a system that tolerates a two-minute maintenance window, the boring version is four steps — suspend writes, copy, switch routing, resume — and it is the correct answer, because it has no capture pipeline, no lag threshold and no stall mode. This eight-step version earns its complexity only when the copy cannot fit inside an acceptable pause.\n\nOne deliberate omission: deleting the tenant's rows from the source shard is not in this list, because its position is genuinely arguable. Doing it immediately reclaims space; leaving it for days keeps a verified fallback if the destination turns out to be wrong. That is a judgement call, not a sequence, which is why it is not part of the ordering.",
+      "resource": {
+        "title": "Vitess Documentation: Resharding",
+        "url": "https://vitess.io/docs/reference/vreplication/reshard/",
+        "kind": "documentation"
+      }
+    },
+    {
+      "id": "db-query-planning-002",
+      "type": "multi",
+      "category": "databases",
+      "topic": "query-planning",
+      "difficulty": 4,
+      "sequence": 2,
+      "prompt": "A query joins a 500-million-row `events` table to a 2,000-row `event_types` table, filtering `events` on two correlated columns, `country` and `language`. The planner estimates 800 matching rows; the query actually returns 640,000, and the chosen nested loop runs for minutes. Which actions address the cause rather than the symptom?",
+      "options": [
+        "Create extended statistics on the correlated column pair, so the planner stops multiplying independent selectivities",
+        "Confirm the table has been analysed recently, since a stale sample compounds the estimate error",
+        "Raise the statistics target on each of the two columns, so their histograms are finer",
+        "Disable nested-loop joins for this session so the planner picks a hash join",
+        "Add an index on `(country, language)` so the matching rows are cheaper to locate"
+      ],
+      "answers": [0, 1],
+      "explanation": "The estimate is wrong by a factor of 800, and that single number identifies the cause. By default a planner assumes predicates are independent and multiplies their selectivities: the estimated fraction becomes the fraction matching `country` times the fraction matching `language`. When the columns are correlated — and country and language are about as correlated as two columns get — the true combined selectivity is far higher than the product, so the estimate collapses. Extended statistics exist precisely to record the joint distribution of a column group and are the direct correction. Verifying the table has been analysed recently is the cheap second check, because a stale sample compounds any estimation error and costs nothing to rule out.\n\nRaising the per-column statistics target is the most instructive wrong answer, because it is a real remedy for a different problem. Finer histograms make each column's *individual* selectivity estimate more accurate — and the planner will then multiply two more-accurate numbers together and still be wrong by orders of magnitude, because the error is in the independence assumption, not in either column's histogram. Disabling nested loops does fix this query, and that is why it is tempting: it overrides the planner rather than informing it, which means today's data shape is frozen into the plan and the next distribution shift has no corrective path. Adding an index on the column pair is the subtlest distractor because it is not useless — it genuinely makes locating those rows cheaper. But the estimate is unchanged, so the planner still chooses a nested loop over what it believes are 800 outer rows, and it will then perform 640,000 inner lookups. A faster way to do the wrong plan is still the wrong plan.\n\nWhat the fix costs: extended statistics are declared per column group, so someone must know which groups matter. They do not scale to \"add them everywhere\" — each one costs collection time during analysis, and a schema peppered with speculative statistics objects slows every analysis run for combinations nobody queries.\n\nOne honest qualification, because the distinction between an incident and a fix matters: disabling nested loops is a legitimate emergency lever. During an active outage, stopping the bleeding and then correcting the statistics is better practice than either doing only the override or insisting on the principled fix while the query burns. An answer that says \"set it now, add extended statistics, then remove the override and confirm the plan holds\" is reasoning better than one that picks a single item from this list.",
+      "resource": {
+        "title": "PostgreSQL Documentation: Extended Statistics",
+        "url": "https://www.postgresql.org/docs/current/planner-stats.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-schema-design-002",
+      "type": "open",
+      "category": "databases",
+      "topic": "schema-design",
+      "difficulty": 4,
+      "sequence": 2,
+      "timebox_minutes": 20,
+      "prompt": "A product gives each of its 400 customers a separate PostgreSQL database on shared hardware: 400 databases, identical schema, 600 GB in total. Schema migrations now take six hours because they run 400 times, and two customers are roughly 100 times larger than the median. One regulated customer requires that their data be physically separable on request. Redesign the tenancy model.",
+      "rubric": [
+        {
+          "dimension": "requirements",
+          "weight": 25,
+          "looks_for": [
+            "Asks what physically separable on request must mean concretely — a separate database, a separate instance, or a separate region — and designs against the strictest plausible reading",
+            "Asks whether any query must span tenants, since a yes rules out full physical separation as the default model",
+            "States that the two outsized tenants are a different problem from the other 398, and that one model may not serve both",
+            "Establishes how often new tenants are created, because that determines whether per-tenant provisioning cost matters"
+          ]
+        },
+        {
+          "dimension": "estimation",
+          "weight": 10,
+          "looks_for": [
+            "Notes that 600 GB across 400 tenants averages 1.5 GB, and that the median tenant is far smaller once the two outliers are excluded",
+            "Uses the six-hour figure to derive the per-database migration cost of roughly 54 seconds, and reasons about what reducing the database count would actually save",
+            "Checks whether a shared-schema model's largest table would be manageable at this total volume before proposing one"
+          ]
+        },
+        {
+          "dimension": "architecture",
+          "weight": 20,
+          "looks_for": [
+            "Commits to a specific model — shared schema with a tenant column, schema per tenant, database per tenant, or a stated hybrid — rather than surveying all four",
+            "If proposing a hybrid, states the rule that decides which tenant goes where and who is permitted to change it",
+            "Specifies how tenant isolation is enforced in the chosen model and where that enforcement lives",
+            "States how migrations run under the new model and what the new worst-case duration becomes"
+          ]
+        },
+        {
+          "dimension": "tradeoffs",
+          "weight": 30,
+          "looks_for": [
+            "Commits to a model and states what it costs against the runner-up in specific terms, not as a generic list of advantages",
+            "Names the concrete risk a shared-schema model introduces — one missing tenant predicate leaks data between customers — and specifies a mechanism that makes that failure structurally impossible rather than merely unlikely",
+            "If proposing a hybrid, states its cost: two code paths, two runbooks, and a migration process that must work correctly in both",
+            "Addresses the possibility that the current model is right and only the migration tooling is broken, and either argues against it or concedes it",
+            "Commits to a bound on the connection and memory overhead the chosen model adds, and states what that cost buys against the model it replaces"
+          ]
+        },
+        {
+          "dimension": "communication",
+          "weight": 15,
+          "looks_for": [
+            "States the recommendation in one sentence before justifying it",
+            "States what the regulated customer is told they receive, in terms that would survive a contractual reading",
+            "Identifies which parties must agree — the regulated customer, the two large tenants, and whoever owns the migration tooling — and what each is being asked to accept"
+          ]
+        }
+      ],
+      "model_answer": "The strongest move available here is to question the framing before redesigning. Six hours of migration divided by 400 databases is about 54 seconds each, which is not a tenancy-model problem, it is a serialised-tooling problem. Running migrations with meaningful concurrency could plausibly reduce six hours to well under one without touching the data model at all. A candidate who computes that number and raises it is doing the most valuable thing in this question, and it is also the answer most candidates skip because the prompt implies a redesign is wanted.\n\nThat said, the regulated customer's separability requirement and the 100x size skew are real and do not dissolve. So the well-reasoned answer is usually a hybrid, arrived at deliberately: the long tail of small tenants consolidated — into a shared schema with a tenant column, or a smaller number of databases holding many tenants — while the two outsized tenants and the regulated one keep dedicated databases or instances. The rule that assigns a tenant to a tier should be explicit and owned by someone, because otherwise it erodes.\n\nIf a shared schema is proposed for the long tail, the isolation question must be answered structurally. \"Every query includes a tenant predicate\" is a convention, and conventions fail exactly once in a way that puts one customer's data in front of another. Row-level security, or a data-access layer through which it is not possible to express an unscoped query, converts a discipline problem into a mechanism. A strong answer names the mechanism and says where it is enforced. It also notes that shared-schema tenancy makes the blast radius of a bad migration all 400 customers at once, where the current model's blast radius is one — that is a real thing the current design is buying.\n\nOn separability, the answer should state plainly what the regulated customer is promised. \"Their data lives in its own database, which can be dumped and moved to dedicated infrastructure within N days\" is a claim that survives a contract review. \"We can filter their rows out\" is not, if the contract means physical separation.\n\nWhat the hybrid costs, and a strong answer says this without being asked: two code paths, two operational runbooks, and a migration process that has to be correct in both models simultaneously — which is strictly more complex than either model alone. The justification has to be that the tenant population is genuinely bimodal, which here it is.\n\nA different sound approach is not a worse one. An answer that keeps database-per-tenant, fixes the migration tooling, and argues that the isolation and blast-radius properties are worth more than the operational overhead is reasoning well and may be right. An answer that consolidates everything into a shared schema and argues the regulated customer can be served by an export process rather than physical separation is defensible if it engages honestly with the contractual reading. Grade whether the candidate commits, whether the isolation mechanism is structural rather than procedural, and whether the cost of the chosen model is named rather than assumed away.",
+      "curveballs": [
+        "The regulated customer exercises the separability clause next month, for that one tenant, with a two-week deadline. Walk through what actually happens under your design.",
+        "One of the two outsized tenants grows another tenfold, and its largest table alone becomes bigger than anything the team has operated. Does your model bend or break?",
+        "A tenant's rows are accidentally written into another tenant's scope. Under your design, how would you find out, how long would that take, and how would you prove the blast radius?"
+      ],
+      "resource": {
+        "title": "PostgreSQL Documentation: Row Security Policies",
+        "url": "https://www.postgresql.org/docs/current/ddl-rowsecurity.html",
+        "kind": "section"
+      }
+    },
+    {
+      "id": "db-isolation-004",
+      "type": "mcq",
+      "category": "databases",
+      "topic": "isolation",
+      "difficulty": 5,
+      "sequence": 4,
+      "prompt": "An on-call schedule must always have at least one engineer assigned. Two engineers concurrently remove themselves; each transaction reads that the other is still assigned, so each permits its own removal, and the table ends up empty. The application runs on PostgreSQL at the default isolation level and handles about 5 transactions per second on this table. Which fix best restores the invariant?",
+      "options": [
+        "Move these transactions to SERIALIZABLE and retry on serialisation failure",
+        "Move these transactions to REPEATABLE READ, so each sees a stable snapshot",
+        "Take `SELECT ... FOR UPDATE` on the rows being read, before deciding",
+        "Add a database constraint enforcing a minimum number of assigned rows"
+      ],
+      "answer": 0,
+      "explanation": "This is write skew: two transactions read an overlapping set of rows, each makes a decision based on what it read, and each writes to a *different* row. Because their writes do not collide, nothing in snapshot-based concurrency control detects a conflict, and the combined effect violates an invariant neither transaction violated alone. PostgreSQL's SERIALIZABLE level detects exactly this, because it tracks read-write dependencies between concurrent transactions rather than only write-write conflicts, and aborts one with a serialisation failure. At 5 transactions per second on this table the abort rate is negligible and a retry loop is cheap, so the guarantee is close to free.\n\nREPEATABLE READ is the answer this question exists to eliminate, and the misconception is precise: snapshot isolation does prevent dirty reads, non-repeatable reads and — in PostgreSQL — phantom reads, so it *feels* like the strongest thing short of serialisable. But write skew is the specific anomaly snapshot isolation permits. Both transactions get a perfectly consistent snapshot, both see the other engineer present, and both write disjoint rows, so there is no first-updater-wins conflict to raise. Moving to REPEATABLE READ changes nothing about this bug.\n\nThe constraint option comes from a good instinct — put the invariant where it cannot be bypassed — and fails on expressiveness. This invariant is a property of a *set* of rows, and neither a per-row `CHECK` constraint nor a `UNIQUE` constraint can say \"at least one row satisfies this predicate\". You can approximate it with a trigger, or by materialising a counter row that every change must update. The counter version actually works, because it converts the set-level invariant into a write-write conflict on one row, which snapshot isolation *does* detect. The trigger version does not work by itself: a trigger that reads other rows has the same visibility problem as the application code, so unless it also locks or runs serialisably it relocates the bug rather than fixing it. That distinction is the deep point here.\n\nTaking `SELECT ... FOR UPDATE` on the rows being read is a genuinely defensible alternative, and it is the classic fix. It materialises the conflict: by locking the rows the decision depends on, it forces the second transaction to wait and then re-evaluate against the first one's committed result. It needs no retry handling, its latency is predictable rather than probabilistic, and it works on engines that do not implement true serialisability — which matters, because MySQL's SERIALIZABLE is implemented by escalating reads to locking reads, a different mechanism with different behaviour.\n\nWhat decides between them is the context. SERIALIZABLE is the better answer here because it protects against every write skew on this table, including the ones nobody has thought of yet, and the stated 5 transactions per second makes retries cheap. Explicit locking wins when throughput is high enough that abort rates hurt, when the team cannot reliably add retry handling at every call site, when predictable latency matters more than throughput, or when the engine lacks real serialisability. It also has a specific failure mode worth naming: it only protects the conflicts you remembered to lock, so the next invariant someone adds is unprotected by default. Serialisable fails closed; explicit locking fails open.",
+      "resource": {
+        "title": "PostgreSQL Wiki: Serializable Snapshot Isolation (SSI)",
+        "url": "https://wiki.postgresql.org/wiki/SSI",
+        "kind": "documentation"
+      }
+    },
+    {
+      "id": "db-sharding-003",
+      "type": "open",
+      "category": "databases",
+      "topic": "sharding",
+      "difficulty": 5,
+      "sequence": 3,
+      "timebox_minutes": 25,
+      "prompt": "A payments ledger runs on a single PostgreSQL primary at roughly 70% of its write capacity: 4,000 writes/s, 3 TB, growing 40% per year. Every transfer must be atomic across two account rows, and month-end reporting aggregates across all accounts. The team has no distributed-systems operating experience. Propose a path for the next 24 months.",
+      "rubric": [
+        {
+          "dimension": "requirements",
+          "weight": 20,
+          "looks_for": [
+            "Asks what fraction of transfers would cross shard boundaries under a candidate shard key, and states that this figure decides whether sharding is viable at all",
+            "Asks whether month-end reporting can run against a delayed or separate copy, and commits to an assumption",
+            "Treats the team's lack of distributed-systems experience as a genuine design input, rather than ignoring it or dismissing it as a training matter",
+            "Establishes whether the 40% annual growth is in write rate, in data volume, or both, since they force different remedies"
+          ]
+        },
+        {
+          "dimension": "estimation",
+          "weight": 20,
+          "looks_for": [
+            "Projects both figures 24 months out (about 7,800 writes/s and roughly 5.9 TB) and states whether a single node can carry that",
+            "Identifies which resource saturates first — write IOPS, log throughput, connection count, or maintenance headroom — instead of treating capacity as a single number",
+            "Estimates how much headroom moving month-end reporting off the primary actually recovers, and uses that figure to decide whether it is sufficient",
+            "States what the largest available single-node configuration would buy in months, as a concrete alternative to sharding"
+          ]
+        },
+        {
+          "dimension": "architecture",
+          "weight": 15,
+          "looks_for": [
+            "Commits to one path and names its first three concrete steps, with the first deliverable inside a quarter",
+            "States where cross-row atomicity lives under the proposal, and names the mechanism that provides it",
+            "States how month-end aggregation works under the proposal, including which copy of the data it reads"
+          ]
+        },
+        {
+          "dimension": "tradeoffs",
+          "weight": 35,
+          "looks_for": [
+            "Commits to either staying on one node or sharding, and states what the chosen path costs against the other in specific terms rather than as a generic list of advantages",
+            "If staying single-node, names the event that would trigger sharding and what must be built now, so that deferring the work does not cost a full rewrite later",
+            "If sharding, states what cross-shard transfers cost — a distributed transaction's latency and failure modes, or a redesign that makes transfers single-shard — and commits to one",
+            "Weighs the team's operational inexperience against the growth curve and reaches a defensible position, instead of asserting that the team will learn in time",
+            "Names at least one thing the chosen path makes permanently worse, and accepts it rather than presenting the choice as cost-free"
+          ]
+        },
+        {
+          "dimension": "communication",
+          "weight": 10,
+          "looks_for": [
+            "Gives the recommendation in one sentence with its single strongest reason, before elaborating",
+            "States the decision point and its trigger explicitly, so a reader knows when the plan would change",
+            "Says plainly which path is the runner-up and under what condition it would have won"
+          ]
+        }
+      ],
+      "model_answer": "Both paths are defensible here, and the reasoning is what separates a strong answer from a weak one. A grader must not reward the path described first below over the other.\n\nThe arithmetic comes first. 4,000 writes/s growing 40% annually is about 7,800 writes/s in 24 months, and 3 TB becomes roughly 5.9 TB. Neither number is extraordinary for a single well-provisioned node. That observation should change the conversation, because the prompt's framing — 70% of capacity — invites the conclusion that sharding is imminent when the numbers do not obviously require it. A strong answer also asks which resource is actually at 70%, because write IOPS, log throughput, connection count and vacuum headroom saturate differently and have different remedies.\n\nThe first path is to stay on one node and buy the 24 months by removing load rather than adding nodes: move month-end aggregation to a replica or an analytical copy, partition the ledger by time so that closed periods stop competing with current writes, archive settled history, and take the largest single-node configuration available. Each of those is deliverable in weeks, none requires distributed-systems expertise, and together they plausibly cover the projected growth. The honest cost is that the ceiling is deferred rather than removed, and that the team will face the same decision later with less slack. The strong version of this answer names the trigger — a specific write rate or latency threshold — and states what must be built now so sharding later is not a rewrite: a stable tenant or account-group key present on every row, no cross-account queries outside reporting, and no reliance on database-generated sequences that would collide across shards.\n\nThe second path is to shard on account-group and confront cross-shard transfers directly. This is where the under-specified question becomes decisive: if nearly all transfers occur within an account group, sharding is straightforward and most transfers remain single-shard atomic. If a substantial fraction cross groups, every one of those needs either a distributed transaction — with its latency, its coordinator, and failure modes the team has never operated — or a ledger redesign in which a transfer becomes two independently-committed entries reconciled asynchronously, which is a correctness and audit change, not merely a schema change. A strong answer picks one and prices it rather than noting that both exist.\n\nWhat makes this a genuine judgement call is that the two strongest considerations point opposite ways. The growth rate argues for starting the hard work now, while there is still headroom to do it calmly. The team's inexperience argues for not operating a sharded payments ledger for the first time under growth pressure, because the failure modes of a partially-migrated financial system are severe and the team cannot yet recognise them. Either conclusion is defensible. What is not defensible is failing to notice the tension, or resolving it by asserting the team will simply acquire the expertise.\n\nA strong answer also names something the chosen path permanently worsens. Staying single-node concentrates all risk in one failure domain and makes the eventual migration larger. Sharding permanently complicates month-end aggregation, permanently removes a globally unique constraint that does not include the shard key, and makes every future schema change a fleet operation.\n\nGrade the quality of the commitment, the explicitness of the trigger, and whether the cross-shard transfer fraction was recognised as the decisive unknown. Do not grade which path was chosen.",
+      "curveballs": [
+        "Six months in, a regulator requires that every transfer be provably atomic and auditable, with no window in which one side is visible without the other. Which path does that favour, and does your recommendation change?",
+        "The largest single-node configuration available turns out to offer only 1.6 times your current write throughput, not the 3 times you assumed. What now?",
+        "Two engineers with substantial distributed-systems experience join next month. Does that change your recommendation, and should it?"
+      ],
+      "resource": {
+        "title": "Vitess Documentation: Sharding",
+        "url": "https://vitess.io/docs/reference/features/sharding/",
+        "kind": "documentation"
+      }
+    }
+  ]
+}
