@@ -1,28 +1,40 @@
 {
-  "schema": 1,
   "version": 1,
-  "updated": "2026-09-27",
-  "note": "Bump a file's version to make the app pull it. The app compares these numbers against what it already holds and fetches only what moved.",
+  "status": "calibration",
+  "generated": "2026-09-27",
+  "schema": {
+    "envelope": ["id", "type", "category", "topic", "difficulty", "prompt", "resource"],
+    "per_type": {
+      "mcq": ["options", "answer", "explanation"],
+      "multi": ["options", "answers", "explanation"],
+      "order": ["items", "correct", "explanation"],
+      "match": ["left", "right", "pairs", "explanation"],
+      "open": ["rubric", "model_answer", "curveballs", "timebox_minutes"]
+    },
+    "optional": ["sequence", "source_note"],
+    "notes": ["files[].version MUST be an integer. The app parses it as a number and only fetches a file when the remote integer is strictly greater than the one stored on device. A string reads as 0 and the file never updates again.", "sequence is the intended intra-topic study order, ascending within (category, topic).", "source_note is provenance for internal tracking and is stripped before final delivery.", "match: right may contain unused distractors so that no pairing falls out by elimination.", "rubric element shape: { dimension, weight, looks_for[] }; weights sum to exactly 100.", "open questions carry no explanation field."]
+  },
+  "id_prefixes": {
+    "databases": "db",
+    "infrastructure": "infra",
+    "apis": "api",
+    "theory": "thy",
+    "product": "prod"
+  },
   "files": [
     {
-      "path": "questions/databases.json",
+      "path": "questions/databases-01.json",
+      "category": "databases",
       "version": 1,
-      "count": 3
-    },
-    {
-      "path": "questions/infrastructure.json",
-      "version": 1,
-      "count": 3
-    },
-    {
-      "path": "questions/theory.json",
-      "version": 1,
-      "count": 3
-    },
-    {
-      "path": "questions/product.json",
-      "version": 1,
-      "count": 2
+      "count": 25
     }
-  ]
+  ],
+  "planned_totals": {
+    "databases": 300,
+    "infrastructure": 300,
+    "apis": 240,
+    "theory": 240,
+    "product": 250,
+    "total": 1330
+  }
 }
