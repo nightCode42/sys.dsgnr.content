@@ -1,0 +1,92 @@
+{
+  "questions": [
+    {
+      "id": "theory-cap-tradeoff-001",
+      "type": "mcq",
+      "category": "theory",
+      "topic": "consistency",
+      "difficulty": 3,
+      "prompt": "During a network partition, a system keeps accepting writes on both sides and reconciles afterwards. In CAP terms, what has it chosen — and what must it now own?",
+      "options": [
+        "Consistency; it must handle rejected writes",
+        "Availability; it must define a conflict resolution rule",
+        "Partition tolerance; it must reduce network failures",
+        "Consistency and availability; partitions are rare enough to ignore"
+      ],
+      "answer": 1,
+      "explanation": "Partition tolerance is not a choice — networks partition. The real choice is what to do when one happens: refuse writes and stay consistent, or accept them and stay available.\n\nAccepting on both sides means two divergent histories, so the system now owns a merge rule: last-write-wins, CRDTs, vector clocks, or an application-level decision. Choosing availability without naming that rule is the incomplete answer interviewers probe for.",
+      "resource": {
+        "title": "Please stop calling databases CP or AP",
+        "url": "https://martin.kleppmann.com/2015/05/11/please-stop-calling-databases-cp-or-ap.html",
+        "kind": "Martin Kleppmann"
+      }
+    },
+    {
+      "id": "theory-idempotency-002",
+      "type": "multi",
+      "category": "theory",
+      "topic": "idempotency",
+      "difficulty": 2,
+      "prompt": "A payment endpoint must be safe to retry. Which of these actually deliver that?",
+      "options": [
+        "Client sends a unique idempotency key; server stores the result against it",
+        "Server checks whether an identical payment exists in the last 60 seconds",
+        "Retries use exponential backoff",
+        "The write is wrapped in a database transaction"
+      ],
+      "answers": [
+        0
+      ],
+      "explanation": "Only the idempotency key gives a real guarantee. The server records the outcome against the key, so a retry returns the original result rather than charging twice.\n\nThe time-window check is a heuristic — it breaks on a legitimate identical payment, and on a retry arriving after the window. Backoff reduces how often retries collide but never makes a duplicate safe. A transaction makes one write atomic; it says nothing about a second request arriving later.\n\nThe distinction being tested is between reducing the probability of a problem and eliminating it.",
+      "resource": {
+        "title": "Idempotency keys",
+        "url": "https://stripe.com/docs/api/idempotent_requests",
+        "kind": "Stripe API"
+      }
+    },
+    {
+      "id": "theory-consistency-models-003",
+      "type": "match",
+      "category": "theory",
+      "topic": "consistency models",
+      "difficulty": 4,
+      "prompt": "Match each consistency model to the guarantee it actually makes.",
+      "left": [
+        "Linearizability",
+        "Read-your-writes",
+        "Monotonic reads",
+        "Eventual consistency"
+      ],
+      "right": [
+        "Once you observe a value, you never see an older one",
+        "Every operation appears to take effect at a single instant, in real-time order",
+        "Replicas converge if writes stop",
+        "A client always sees its own prior writes"
+      ],
+      "pairs": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          2,
+          0
+        ],
+        [
+          3,
+          2
+        ]
+      ],
+      "explanation": "These are often used loosely as synonyms for \"strong\" and \"weak\", but each names a specific promise.\n\nLinearizability is the strongest: operations behave as if there were one copy, ordered by real time. Read-your-writes and monotonic reads are session guarantees — they say nothing about other clients, only about what one client observes over time. Eventual consistency promises only convergence, and says nothing at all about what you read before then.\n\nThe practical point: the session guarantees are usually what users actually notice, and they are far cheaper than linearizability.",
+      "resource": {
+        "title": "Jepsen: Consistency models",
+        "url": "https://jepsen.io/consistency",
+        "kind": "Reference map"
+      }
+    }
+  ]
+}

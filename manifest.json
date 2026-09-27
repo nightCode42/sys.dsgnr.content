@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "version": 1,
+  "updated": "2026-09-27",
+  "note": "Bump a file's version to make the app pull it. The app compares these numbers against what it already holds and fetches only what moved.",
+  "files": [
+    {
+      "path": "questions/databases.json",
+      "version": 1,
+      "count": 3
+    },
+    {
+      "path": "questions/infrastructure.json",
+      "version": 1,
+      "count": 3
+    },
+    {
+      "path": "questions/theory.json",
+      "version": 1,
+      "count": 3
+    },
+    {
+      "path": "questions/product.json",
+      "version": 1,
+      "count": 2
+    }
+  ]
+}

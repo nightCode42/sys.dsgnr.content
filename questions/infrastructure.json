@@ -1,0 +1,74 @@
+{
+  "questions": [
+    {
+      "id": "infra-failure-modes-001",
+      "type": "match",
+      "category": "infrastructure",
+      "topic": "failure modes",
+      "difficulty": 3,
+      "prompt": "Match each failure mode to the mechanism that contains it.",
+      "left": [
+        "Thundering herd",
+        "Cascading failure",
+        "Split brain",
+        "Hot partition"
+      ],
+      "right": [
+        "Circuit breaker",
+        "Request coalescing",
+        "Consistent hashing with virtual nodes",
+        "Quorum writes"
+      ],
+      "pairs": [[0, 1], [1, 0], [2, 3], [3, 2]],
+      "explanation": "Each mechanism targets one specific shape of failure.\n\nRequest coalescing collapses many identical in-flight requests into one, so a cold cache entry does not produce a stampede. A circuit breaker stops a failing dependency from consuming the caller's threads and taking it down too. Quorum writes stop two halves of a partitioned cluster both believing they are authoritative. Virtual nodes spread one hot key range across many physical nodes rather than landing it all on one.",
+      "resource": {
+        "title": "Google SRE Book",
+        "url": "https://sre.google/sre-book/addressing-cascading-failures/",
+        "kind": "Addressing cascading failures"
+      }
+    },
+    {
+      "id": "infra-lb-health-002",
+      "type": "mcq",
+      "category": "infrastructure",
+      "topic": "load balancing",
+      "difficulty": 2,
+      "prompt": "Your health check pings /health, which returns 200 whenever the process is running. A deploy leaves instances unable to reach the database, but they stay in rotation and serve errors. What is the actual defect?",
+      "options": [
+        "The health check interval is too long",
+        "The health check tests liveness when routing needs readiness",
+        "The load balancer needs more aggressive retries",
+        "The instances should be terminated on any error"
+      ],
+      "answer": 1,
+      "explanation": "Liveness answers \"is this process alive\" — restart it if not. Readiness answers \"can this instance serve a real request right now\" — take it out of rotation if not. Routing decisions need the second.\n\nA readiness check that exercises the dependencies a request actually needs would have failed here and pulled the instances out. Shortening the interval only reaches the wrong answer faster; more retries spread the errors across more instances.",
+      "resource": {
+        "title": "Kubernetes probes",
+        "url": "https://kubernetes.io/docs/concepts/configuration/liveness-readiness-startup-probes/",
+        "kind": "Liveness, readiness, startup"
+      }
+    },
+    {
+      "id": "infra-deploy-order-003",
+      "type": "order",
+      "category": "infrastructure",
+      "topic": "deployments",
+      "difficulty": 3,
+      "prompt": "Order the steps of a backward-compatible schema change that adds a required column, with zero downtime.",
+      "items": [
+        "Backfill existing rows",
+        "Deploy code that writes both old and new columns",
+        "Add the column as nullable",
+        "Deploy code that reads the new column",
+        "Add the NOT NULL constraint"
+      ],
+      "correct": [2, 1, 0, 3, 4],
+      "explanation": "Every step has to leave both the old and new code versions working, because during a rolling deploy both are running at once.\n\nAdding the column nullable is safe for old code, which ignores it. Writing both keeps new rows complete while old rows are still being filled. Only once the backfill is done can reads rely on it, and only once every row has a value can the constraint be added without failing.\n\nGetting this order wrong is one of the most common causes of self-inflicted downtime.",
+      "resource": {
+        "title": "Online schema migrations",
+        "url": "https://github.com/github/gh-ost",
+        "kind": "gh-ost"
+      }
+    }
+  ]
+}
