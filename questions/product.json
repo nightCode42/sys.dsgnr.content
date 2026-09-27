@@ -1,0 +1,144 @@
+{
+  "questions": [
+    {
+      "id": "open-rate-limiter-001",
+      "type": "open",
+      "category": "product",
+      "topic": "rate limiting",
+      "difficulty": 3,
+      "timebox_minutes": 15,
+      "prompt": "Design an API rate limiter for a public API serving 50k requests/second across 200k API keys. Limits are per-key. Walk through your approach.",
+      "rubric": [
+        {
+          "dimension": "requirements",
+          "weight": 20,
+          "looks_for": [
+            "separates functional from non-functional requirements",
+            "asks or states whether limits are per-key, per-IP, or per-endpoint",
+            "states the window and what happens at the boundary",
+            "decides whether bursts are allowed"
+          ]
+        },
+        {
+          "dimension": "estimation",
+          "weight": 15,
+          "looks_for": [
+            "estimates memory for the counters (200k keys x tens of bytes)",
+            "uses that number to justify one instance versus a cluster",
+            "notes the check is on every request, so latency budget is tight"
+          ]
+        },
+        {
+          "dimension": "architecture",
+          "weight": 25,
+          "looks_for": [
+            "names a concrete algorithm (token bucket, sliding window, fixed window)",
+            "places the check at the gateway, before application routing",
+            "explains how counters are shared across nodes",
+            "handles refill without a job iterating every key"
+          ]
+        },
+        {
+          "dimension": "tradeoffs",
+          "weight": 25,
+          "looks_for": [
+            "names what the chosen algorithm costs versus an alternative",
+            "addresses accuracy of distributed counters under concurrency",
+            "states fail-open or fail-closed when the counter store is unreachable, and why",
+            "acknowledges the boundary burst problem if using fixed windows"
+          ]
+        },
+        {
+          "dimension": "communication",
+          "weight": 15,
+          "looks_for": [
+            "structured rather than jumping straight to components",
+            "states assumptions explicitly",
+            "specifies the client-facing response (429, Retry-After, headers)"
+          ]
+        }
+      ],
+      "model_answer": "A strong answer clarifies the window and burst behaviour before designing anything, then estimates counter memory — roughly 200k keys times a few tens of bytes is single-digit megabytes, which is the number that decides one Redis instance versus a cluster, and that reasoning is the point rather than the figure.\n\nIt picks token bucket for a public API because short bursts are desirable, stores two fields per key (tokens, last refill timestamp), and computes refill lazily on read from elapsed time rather than running a job over 200k keys. The check sits at the gateway so rejected requests never reach application servers.\n\nOn trade-offs it names what token bucket costs against a sliding window log (less precision, far less memory), addresses read-modify-write races under concurrency with an atomic operation or a Lua script, and — the part most answers miss — states explicitly whether the limiter fails open or closed when the store is unreachable, and argues for it. Failing open is usually right: a limiter protects against abuse but is not the product, so a store blip should not become a full outage.\n\nIt closes the loop with the client contract: 429 plus Retry-After, and limit headers so clients can self-pace.",
+      "curveballs": [
+        "Your counter store has a 200ms network partition. What does your API return during it, and why is that the right call?",
+        "One customer is now 100x the traffic of every other. What breaks first?",
+        "Product wants per-endpoint limits as well as per-key. What changes?"
+      ],
+      "resource": {
+        "title": "How we built rate limiting",
+        "url": "https://stripe.com/blog/rate-limiters",
+        "kind": "Stripe engineering"
+      }
+    },
+    {
+      "id": "open-notification-fanout-002",
+      "type": "open",
+      "category": "product",
+      "topic": "fan-out",
+      "difficulty": 4,
+      "timebox_minutes": 20,
+      "prompt": "Design a notification service. Products publish events; users receive them by push, email, or in-app, according to their preferences. Some events fan out to millions of users. Walk through your approach.",
+      "rubric": [
+        {
+          "dimension": "requirements",
+          "weight": 20,
+          "looks_for": [
+            "separates functional from non-functional requirements",
+            "asks about delivery guarantees — at-least-once versus exactly-once",
+            "establishes latency expectations, and that they differ per channel",
+            "covers preferences, quiet hours, and opt-out"
+          ]
+        },
+        {
+          "dimension": "estimation",
+          "weight": 15,
+          "looks_for": [
+            "estimates peak fan-out rate, not just the average",
+            "sizes the queue for a burst rather than steady state",
+            "notes third-party provider rate limits as a real constraint"
+          ]
+        },
+        {
+          "dimension": "architecture",
+          "weight": 25,
+          "looks_for": [
+            "separates ingestion from fan-out from per-channel delivery",
+            "uses a queue so a slow provider cannot block ingestion",
+            "explains how a million-user fan-out is chunked rather than done inline",
+            "handles per-channel retry with backoff and a dead letter path"
+          ]
+        },
+        {
+          "dimension": "tradeoffs",
+          "weight": 25,
+          "looks_for": [
+            "addresses duplicate delivery and how the client deduplicates",
+            "explains the cost of ordering guarantees, or argues they are not needed",
+            "isolates one failing channel or provider from the others",
+            "notes that retrying a push hours later is worse than dropping it"
+          ]
+        },
+        {
+          "dimension": "communication",
+          "weight": 15,
+          "looks_for": [
+            "structured rather than jumping straight to components",
+            "states assumptions explicitly",
+            "defines the event contract publishers write against"
+          ]
+        }
+      ],
+      "model_answer": "A strong answer splits the problem into three stages — ingest, fan-out, deliver — and keeps them decoupled by queues, so a slow email provider cannot stall event ingestion or push delivery.\n\nOn estimation it reasons about peak rather than average: a single event reaching a million users is a burst the fan-out stage must absorb, which is the argument for expanding recipients asynchronously in chunks rather than inline at publish time. Provider rate limits are treated as a first-class constraint rather than an afterthought.\n\nPreferences are resolved during fan-out, not at publish, so publishers stay ignorant of channels. Each channel gets its own worker pool and its own retry policy — isolation here is what stops one dead provider becoming an outage for all notifications.\n\nThe trade-off discussion is where good answers separate. At-least-once plus client-side deduplication on an event id is usually the right call, because exactly-once across third-party providers is not achievable and pretending otherwise hides the problem. A strong answer also notes that time-sensitive notifications should expire rather than retry indefinitely: a push that arrives four hours late is worse than one that never arrives.",
+      "curveballs": [
+        "The email provider starts returning 500s for 20 minutes. Walk me through exactly what happens to the queue, and what the user sees.",
+        "A bug publishes the same event 50,000 times. What stops users getting 50,000 notifications?",
+        "Legal needs proof a specific notification was delivered 6 months ago. What changes?"
+      ],
+      "resource": {
+        "title": "Designing a notification system",
+        "url": "https://newsletter.systemdesign.one/p/notification-service",
+        "kind": "Architecture walkthrough"
+      }
+    }
+  ]
+}
